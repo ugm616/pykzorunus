@@ -1,0 +1,251 @@
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PYKZORUNUS</title>
+    <link href="https://fonts.googleapis.com/css2?family=Aldrich&display=swap" rel="stylesheet">
+    <style>
+        body {
+            background-color: black;
+            color: cyan;
+            font-family: 'Aldrich', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            text-align: center;
+            flex-direction: column;
+        }
+
+        .input-container,
+        .button-container {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        input[type="file"],
+        button {
+            background-color: #8B4000; /* Very dark orange */
+            color: cyan;
+            font-family: 'Aldrich', sans-serif;
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+        }
+
+        input[type="file"]:hover,
+        button:hover,
+        button:active {
+            background-color: orange;
+            color: black;
+        }
+
+        textarea {
+            width: 300px;
+            height: 100px;
+            font-family: 'Aldrich', sans-serif;
+            margin: 10px 0;
+        }
+
+        canvas {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>PYKZORUNUS</h1>
+    <div class="input-container">
+        <input type="file" id="upload" accept="image/*">
+        <button onclick="encryptImage()">Encrypt</button>
+        <button onclick="decryptImage()">Decrypt</button>
+        <button onclick="copyKey()">Copy Key</button>
+        <button onclick="pasteKey()">Paste Key</button>
+        <button id="downloadButton" onclick="downloadImage()" style="display:none;">Download Image</button>
+    </div>
+    <br>
+    <label for="keyBox">Key:</label>
+    <textarea id="keyBox"></textarea>
+    <br>
+    <canvas id="canvas"></canvas>
+    <script>
+        let originalImageData;
+        let encryptedImageData;
+
+        // Open IndexedDB
+        const request = indexedDB.open('imagehide', 1);
+        let db;
+
+        request.onupgradeneeded = function(event) {
+            db = event.target.result;
+            db.createObjectStore('images', { keyPath: 'id' });
+        };
+
+        request.onsuccess = function(event) {
+            db = event.target.result;
+        };
+
+        request.onerror = function(event) {
+            console.error('IndexedDB error:', event.target.errorCode);
+        };
+
+        function loadImage(file) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => resolve(img);
+                img.onerror = reject;
+                img.src = URL.createObjectURL(file);
+            });
+        }
+
+        function getImageData(img) {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            ctx.drawImage(img, 0, 0);
+            return ctx.getImageData(0, 0, img.width, img.height);
+        }
+
+        function generateKey(length) {
+            const key = new Uint8Array(length);
+            for (let i = 0; i < length; i++) {
+                key[i] = Math.floor(Math.random() * 256);
+            }
+            return key;
+        }
+
+        function keyToBase64(key) {
+            let binary = '';
+            const len = key.byteLength;
+            for (let i = 0; i < len; i++) {
+                binary += String.fromCharCode(key[i]);
+            }
+            return btoa(binary);
+        }
+
+        function base64ToKey(str) {
+            return new Uint8Array(atob(str).split('').map(char => char.charCodeAt(0)));
+        }
+
+        function applyXOR(data, key) {
+            const result = new Uint8ClampedArray(data.length);
+            for (let i = 0; i < data.length; i++) {
+                result[i] = data[i] ^ key[i % key.length];
+            }
+            return result;
+        }
+
+        function displayImage(imageData) {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        function downloadImage() {
+            const canvas = document.getElementById('canvas');
+            const link = document.createElement('a');
+            link.download = 'image.png';
+            link.href = canvas.toDataURL();
+            link.click();
+        }
+
+        async function encryptImage() {
+            const fileInput = document.getElementById('upload');
+            if (fileInput.files.length === 0) {
+                alert('Please upload an image!');
+                return;
+            }
+
+            const img = await loadImage(fileInput.files[0]);
+            originalImageData = getImageData(img);
+            const key = generateKey(originalImageData.data.length);
+            const encryptedData = applyXOR(originalImageData.data, key);
+            encryptedImageData = new ImageData(encryptedData, originalImageData.width, originalImageData.height);
+            displayImage(encryptedImageData);
+
+            // Store encrypted image data in IndexedDB
+            const transaction = db.transaction(['images'], 'readwrite');
+            const objectStore = transaction.objectStore('images');
+            objectStore.put({
+                id: 'encryptedImageData',
+                data: encryptedData,
+                width: encryptedImageData.width,
+                height: encryptedImageData.height
+            });
+
+            transaction.oncomplete = function() {
+                console.log('Encrypted image data stored in IndexedDB');
+            };
+
+            transaction.onerror = function(event) {
+                console.error('IndexedDB transaction error:', event.target.errorCode);
+            };
+
+            document.getElementById('keyBox').value = keyToBase64(key);
+            document.getElementById('downloadButton').style.display = 'inline';
+        }
+
+        function decryptImage() {
+            const keyStr = document.getElementById('keyBox').value;
+            if (!keyStr) {
+                alert('No encrypted image or key provided!');
+                return;
+            }
+
+            // Retrieve encrypted image data from IndexedDB
+            const transaction = db.transaction(['images']);
+            const objectStore = transaction.objectStore('images');
+            const request = objectStore.get('encryptedImageData');
+
+            request.onsuccess = function(event) {
+                const record = event.target.result;
+                if (!record) {
+                    alert('No encrypted image or key provided!');
+                    return;
+                }
+
+                const encryptedData = new Uint8ClampedArray(record.data);
+                const key = base64ToKey(keyStr);
+                const decryptedData = applyXOR(encryptedData, key);
+                const decryptedImageData = new ImageData(decryptedData, record.width, record.height);
+
+                // Ensure the canvas dimensions match the original image
+                const canvas = document.getElementById('canvas');
+                canvas.width = record.width;
+                canvas.height = record.height;
+
+                displayImage(decryptedImageData);
+                document.getElementById('downloadButton').style.display = 'inline';
+            };
+
+            request.onerror = function(event) {
+                console.error('IndexedDB request error:', event.target.errorCode);
+            };
+        }
+
+        function copyKey() {
+            const keyBox = document.getElementById('keyBox');
+            keyBox.select();
+            document.execCommand('copy');
+        }
+
+        function pasteKey() {
+            const keyBox = document.getElementById('keyBox');
+            navigator.clipboard.readText().then(text => {
+                keyBox.value = text;
+            }).catch(err => {
+                console.error('Failed to read clipboard contents: ', err);
+                alert('Failed to read clipboard contents. Please make sure you have granted clipboard permissions.');
+            });
+        }
+    </script>
+</body>
+
+</html>
